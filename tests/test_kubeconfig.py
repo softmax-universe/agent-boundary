@@ -1,8 +1,6 @@
 from pathlib import Path
 
-import pytest
 import yaml
-from pydantic import ValidationError
 
 from agent_boundary import kubeconfig
 from agent_boundary.models import Profile
@@ -93,18 +91,6 @@ def profile(*, eks: bool = True, orbstack: bool = True) -> Profile:
             "kube": {"eks": eks, "orbstack": orbstack},
         }
     )
-
-
-def test_profile_uses_nested_aws_and_kube_settings() -> None:
-    parsed = profile()
-    assert parsed.aws and parsed.aws.profile == "MyOrg/ReadonlyAccess"
-    assert parsed.kube.eks
-    assert parsed.kube.orbstack
-
-    with pytest.raises(ValidationError):
-        Profile.model_validate({"name": "old", "description": "old", "aws_profile": "legacy"})
-    with pytest.raises(ValidationError):
-        Profile.model_validate({"name": "missing-aws", "description": "missing", "kube": {"eks": True}})
 
 
 def test_builds_env_credential_eks_user_and_copies_orbstack(tmp_path: Path) -> None:

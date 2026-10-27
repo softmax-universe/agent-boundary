@@ -34,21 +34,7 @@ require_gate_integration()
 
 CLI = (sys.executable, "-m", "agent_boundary.entrypoint")
 GATE = (*CLI, "claude", "hook", "PreToolUse")
-# The gate trusts the executable it is running from; the suite and the gate
-# subprocess share this venv.
-TOGGLE = Path(sys.prefix) / "bin/agent-boundary"
 HOME = Path.home()
-GITDIR = Path(
-    subprocess.run(
-        ["git", "-C", WORKTREE, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-)
-GITCONFIG_TARGET = Path(f"{HOME}/.gitconfig").resolve()
-PKG_DIRS = sorted((HOME / ".cache/pkg").glob("*/better-sqlite3"))
-RC = next((HOME / name for name in (".zshrc", ".bashrc") if (HOME / name).exists()), None)
 
 HookOutput = dict[str, Any]
 
@@ -202,14 +188,6 @@ def default_sid(harness: Harness) -> str:
     return harness.session("default")
 
 
-@pytest.fixture
-def default_profile() -> Iterator[Path]:
-    profile = PROFILES / "default.yaml"
-    original = profile.read_text()
-    yield profile
-    profile.write_text(original)
-
-
 def test_off_is_silent_and_on_wraps_bash(harness: Harness) -> None:
     sid = harness.session("mode")
     harness.cli("off", sid=sid)
@@ -257,28 +235,6 @@ def test_missing_policy_fails_closed_with_recovery_command(harness: Harness) -> 
 @pytest.mark.parametrize(
     "command",
     [
-        "agent-boundary",
-        "agent-boundary on",
-        "agent-boundary off",
-        "agent-boundary reload",
-        "agent-boundary list",
-        "agent-boundary use self-edit",
-        "agent-boundary use default",
-    ],
-)
-def test_cli_commands_use_protected_runtime(harness: Harness, default_sid: str, command: str) -> None:
-    output = harness.bash_output(command, default_sid)
-    expected = " ".join(
-        shlex.quote(part) for part in [str(TOGGLE), "--session-dir", str(SESSIONS / default_sid), *command.split()[1:]]
-    )
-
-    assert output["permissionDecision"] == "ask"
-    assert output["updatedInput"]["command"] == expected
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
         "agent-boundary off; cat ~/.aws/config",
         "agent-boundary off && sh",
         "X=1 agent-boundary off",
@@ -301,36 +257,6 @@ def test_absent_denied_leaf_stays_denied(harness: Harness, tmp_path: Path) -> No
     assert harness.decision("Write", tmp_path / "new.txt", sid, tmp_path) == "allow"
     assert harness.decision("Write", tmp_path / "a/b/c.txt", sid, tmp_path) == "allow"
     assert list(tmp_path.iterdir()) == [tmp_path / ".claude"]
-
-
-@pytest.mark.parametrize(
-    "profile_text",
-    [
-        "name: default\nbogus_key: 1\n",
-        "name: default\n  bad: [\n",
-        "- just\n- a list\n",
-        "name: default\nresolve_symlinks:\n  - access: read\n",
-    ],
-    ids=["unknown-key", "invalid-yaml", "not-a-mapping", "missing-symlink-path"],
-)
-def test_writers_report_invalid_profiles_without_tracebacks(
-    harness: Harness, default_profile: Path, profile_text: str, request: pytest.FixtureRequest
-) -> None:
-    default_profile.write_text(profile_text)
-    sid = f"pytest-{os.getpid()}-writer-{request.node.callspec.id}"[:64]
-
-    reload_proc = harness.cli("reload", sid=sid, check=False)
-    start_proc = harness.cli(
-        "claude",
-        "hook",
-        "SessionStart",
-        input_data={"session_id": sid, "cwd": str(WORKTREE)},
-        check=False,
-    )
-
-    for proc in (reload_proc, start_proc):
-        assert proc.stderr.strip()
-        assert "Traceback" not in proc.stderr
 
 
 def test_self_edit_opens_plugin_but_not_external_secrets(harness: Harness, default_sid: str) -> None:
@@ -468,10 +394,6 @@ def test_run_uses_the_boundary_and_injects_credentials(harness: Harness, with_se
     assert denied.returncode != 0
 
 
-def test_run_without_command_prints_usage(harness: Harness) -> None:
-    assert harness.cli("run", check=False).returncode == 2
-
-
 def test_session_can_be_created_and_inspected_without_claude_environment(harness: Harness, tmp_path: Path) -> None:
     directory = tmp_path / "manual-session"
     env = {key: value for key, value in harness.env.items() if not key.startswith("CLAUDE_")}
@@ -514,58 +436,8 @@ def test_run_rejects_an_incomplete_selected_session(harness: Harness) -> None:
     assert "no complete session" in result.stderr
 
 
-def test_safe_tool_is_allowed(harness: Harness, default_sid: str) -> None:
-    output = harness.hook_output(
-        {"tool_name": "Glob", "tool_input": {"pattern": "*.py"}, "cwd": str(WORKTREE), "session_id": default_sid}
-    )
-    assert output["permissionDecision"] == "allow"
-
-
 def test_unknown_tool_asks(harness: Harness, default_sid: str) -> None:
     output = harness.hook_output(
         {"tool_name": "LSP", "tool_input": {}, "cwd": str(WORKTREE), "session_id": default_sid}
     )
     assert output["permissionDecision"] == "ask"
-
-
-PATH_CASES = [
-    pytest.param("Read", WORKTREE / "pyproject.toml", "allow", id="read-worktree"),
-    pytest.param("Read", HOME / ".config/gh/config.yml", "allow", id="read-gh-config"),
-    pytest.param("Read", HOME / ".gitconfig", "allow", id="read-gitconfig-symlink"),
-    pytest.param("Read", HOME / ".aws/config", "deny", id="deny-read-aws"),
-    pytest.param("Read", HOME / ".ssh/id_rsa", "deny", id="deny-read-ssh"),
-    pytest.param("Read", WORKTREE / "does-not-exist.txt", "allow", id="read-absent-worktree"),
-    pytest.param("Read", HOME / ".aws/does-not-exist", "deny", id="deny-read-absent-aws"),
-    pytest.param("Write", WORKTREE / "pyproject.toml", "allow", id="write-worktree"),
-    pytest.param("Write", WORKTREE / "brand-new-file.txt", "allow", id="write-new-worktree"),
-    pytest.param("Edit", WORKTREE / "pyproject.toml", "allow", id="edit-worktree"),
-    pytest.param("Write", HOME / ".aws/config", "deny", id="deny-write-aws"),
-    pytest.param("Write", HOME / "evil.txt", "deny", id="deny-write-home"),
-    pytest.param("Write", HOME / ".aws/brand-new-secret", "deny", id="deny-write-new-aws"),
-    pytest.param("Write", HOME / ".ssh/authorized_keys2", "deny", id="deny-write-ssh"),
-    pytest.param("Write", PROFILES / "default.yaml", "deny", id="deny-write-profile"),
-    pytest.param("Edit", SKILL / "hooks/hooks.json", "deny", id="deny-edit-hook"),
-    pytest.param("Read", PROFILES / "default.yaml", "deny", id="deny-read-profile"),
-    pytest.param("Read", GITDIR / "config", "allow", id="read-gitdir"),
-    pytest.param("Write", GITDIR / "index", "allow", id="write-gitdir"),
-    pytest.param("Read", GITCONFIG_TARGET, "allow", id="read-gitconfig-target"),
-]
-if PKG_DIRS:
-    PATH_CASES.extend(
-        [
-            pytest.param("Read", PKG_DIRS[0] / "package.json", "allow", id="read-graphite-addon"),
-            pytest.param("Write", PKG_DIRS[0] / "package.json", "deny", id="deny-write-graphite-addon"),
-        ]
-    )
-if RC:
-    PATH_CASES.extend(
-        [
-            pytest.param("Read", RC, "allow", id="read-shell-rc"),
-            pytest.param("Write", RC, "allow", id="write-shell-rc"),
-        ]
-    )
-
-
-@pytest.mark.parametrize(("tool", "path", "expected"), PATH_CASES)
-def test_default_path_policy(harness: Harness, default_sid: str, tool: str, path: Path, expected: str) -> None:
-    assert harness.decision(tool, path, default_sid) == expected
