@@ -1,71 +1,51 @@
-"""Root Typer application with commands imported on demand."""
+"""Typer commands for explicit sessions and harness integrations."""
 
-import importlib
 from pathlib import Path
-from typing import Annotated, ClassVar
+from typing import Annotated
 
 import click
 import typer
 from typer.core import TyperGroup
-from typer.main import get_command
+
+from agent_boundary import boundary, session
+from agent_boundary.claude import statusline
+from agent_boundary.claude.hooks import pre_tool_use, session_start
+from agent_boundary.cli.run import CONTEXT_SETTINGS
+from agent_boundary.cli.run import command as run_command
+from agent_boundary.cli.session import require_dir, write
+from agent_boundary.paths import profiles_dir
 
 
-class LazyGroup(TyperGroup):
-    """Resolve each command from its module only when Click needs it."""
-
-    lazy_commands: ClassVar[dict[str, str]] = {}
-
-    @classmethod
-    def build_command(cls, name: str, help: str) -> click.Command:
-        app = typer.Typer(name=name, cls=cls, help=help, no_args_is_help=True, add_completion=False)
-        app.callback()(lambda: None)
-        return get_command(app)
+class _CommandGroup(TyperGroup):
+    resolve_command = click.Group.resolve_command
 
     def list_commands(self, ctx: click.Context) -> list[str]:
-        return sorted({*super().list_commands(ctx), *self.lazy_commands})
-
-    def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
-        if command := super().get_command(ctx, name):
-            return command
-        module_name = self.lazy_commands.get(name)
-        if module_name is None:
-            return None
-
-        module = importlib.import_module(module_name)
-        if factory := getattr(module, "build_command", None):
-            command = factory()
-        else:
-            command_app = typer.Typer(add_completion=False)
-            command_app.command(
-                name=name,
-                context_settings=getattr(module, "CONTEXT_SETTINGS", None),
-            )(module.command)
-            command = get_command(command_app)
-        self.add_command(command, name)
-        return command
-
-
-class RootGroup(LazyGroup):
-    lazy_commands = {
-        "claude": "agent_boundary.cli.commands.claude_command",
-        "list": "agent_boundary.cli.commands.list",
-        "off": "agent_boundary.cli.commands.off",
-        "on": "agent_boundary.cli.commands.on",
-        "reload": "agent_boundary.cli.commands.reload",
-        "run": "agent_boundary.cli.commands.run",
-        "status": "agent_boundary.cli.commands.status",
-        "session": "agent_boundary.cli.commands.session_command",
-        "use": "agent_boundary.cli.commands.use",
-    }
+        return sorted(super().list_commands(ctx))
 
 
 app = typer.Typer(
-    cls=RootGroup,
+    cls=_CommandGroup,
     help="Create, inspect, and run OS-enforced agent boundaries.",
     invoke_without_command=True,
     add_completion=False,
     pretty_exceptions_enable=False,
 )
+sessions = typer.Typer(
+    cls=_CommandGroup, help="Create explicit boundary sessions.", no_args_is_help=True, add_completion=False
+)
+claude = typer.Typer(
+    cls=_CommandGroup, help="Run Claude Code integrations.", no_args_is_help=True, add_completion=False
+)
+hooks = typer.Typer(cls=_CommandGroup, help="Run a Claude Code hook event.", no_args_is_help=True, add_completion=False)
+for group in (sessions, claude, hooks):
+    group.callback()(lambda: None)
+app.add_typer(sessions, name="session")
+app.add_typer(claude, name="claude")
+claude.add_typer(hooks, name="hook")
+claude.command("statusline")(statusline.command)
+hooks.command("PreToolUse")(pre_tool_use.command)
+hooks.command("SessionStart")(session_start.command)
+app.command("run", context_settings=CONTEXT_SETTINGS)(run_command)
 
 
 @app.callback()
@@ -83,11 +63,66 @@ def main(
 ) -> None:
     """Create, inspect, and run OS-enforced agent boundaries."""
     if session_dir is None:
-        from agent_boundary import session  # noqa: PLC0415
-
         session_dir = session.current_dir()
     ctx.obj = session_dir.expanduser().resolve() if session_dir else None
     if ctx.invoked_subcommand is None:
-        from agent_boundary.cli.commands.status import command  # noqa: PLC0415
+        status(ctx)
 
-        command(ctx)
+
+@app.command("status")
+def status(ctx: typer.Context) -> None:
+    """Show the current session's profile and state."""
+    config = session.read(require_dir(ctx))
+    typer.echo(session.describe(config) if config else "no boundary for this session; run: agent-boundary reload")
+
+
+@app.command("list")
+def list_profiles() -> None:
+    """List available boundary profiles."""
+    typer.echo("\n".join(boundary.profile_names(profiles_dir())) or "(none)")
+
+
+@app.command("on")
+def on(ctx: typer.Context) -> None:
+    """Enable boundary enforcement for this session."""
+    current = session.read(require_dir(ctx))
+    write(ctx, current.profile if current else "default", "on")
+
+
+@app.command("off")
+def off(ctx: typer.Context) -> None:
+    """Return this session to its harness's normal permissions."""
+    current = session.read(require_dir(ctx))
+    write(ctx, current.profile if current else "default", "off")
+
+
+@app.command("reload")
+def reload(ctx: typer.Context) -> None:
+    """Regenerate this session's pinned policy from its profile."""
+    current = session.read(require_dir(ctx))
+    write(ctx, current.profile if current else "default", current.state if current else "on")
+
+
+@app.command("use")
+def use(ctx: typer.Context, profile: Annotated[str, typer.Argument(help="Profile to activate.")]) -> None:
+    """Switch profile and regenerate this session's pinned policy."""
+    current = session.read(require_dir(ctx))
+    write(ctx, profile, current.state if current else "on")
+
+
+@sessions.command("create")
+def create_session(
+    directory: Annotated[Path, typer.Argument(help="Directory to create for this session.")],
+    profile: Annotated[str, typer.Option(help="Profile to pin.")] = "default",
+    workdir: Annotated[Path | None, typer.Option(help="Working directory protected by the session.")] = None,
+) -> None:
+    """Create a session with a pinned profile and policy."""
+    try:
+        config, warnings = session.write(directory, profile, "on", workdir=workdir or Path.cwd())
+    except boundary.PROFILE_ERRORS as error:
+        typer.echo(f"agent-boundary: {error}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(str(directory.expanduser().resolve()))
+    typer.echo(session.describe(config))
+    for warning in warnings:
+        typer.echo(f"agent-boundary: {warning}", err=True)

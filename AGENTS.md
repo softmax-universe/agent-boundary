@@ -16,7 +16,8 @@ and close once the change lands.
 - `agent_boundary.harness`: lazy current-session provider proxy; Claude is the only provider today.
 - `agent_boundary.claude`: Claude payloads, tool policy, plugin paths, hooks, and statusline rendering.
 - `agent_boundary.entrypoint`: fast-routes Claude hooks/statusline without loading Typer or writer dependencies.
-- `agent_boundary.cli.commands`: one lazy-loaded module per command.
+- `agent_boundary.cli.app`: declarative Typer groups and session commands.
+- `agent_boundary.cli.run`: process execution for explicit and temporary boundary sessions.
 
 Profiles come from `AGENT_BOUNDARY_PROFILES_DIR`, falling back to the XDG config directory. Generated state belongs to
 an explicit session directory; harness sessions, installed runtimes, and the private uv cache all live under
