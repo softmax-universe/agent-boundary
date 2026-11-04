@@ -42,7 +42,7 @@ install_runtime() {
     # or for pinning to something else.
     uv venv --python ">=3.11,<3.13" -- "$runtime" </dev/null
     uv pip install --python "$runtime/bin/python" -- \
-      "${AGENT_BOUNDARY_PACKAGE_SPEC:-agent-boundary @ git+https://github.com/Metta-AI/agent-boundary@$package_git_ref}" \
+      "${AGENT_BOUNDARY_PACKAGE_SPEC:-agent-boundary @ git+https://github.com/softmax-universe/agent-boundary@$package_git_ref}" \
       </dev/null
   fi
   # Stable path for statuslines and other per-user consumers of the CLI's
