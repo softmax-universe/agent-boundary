@@ -7,13 +7,13 @@ The point is to make "let it run without approving every command" a reasonable d
 approving everything by hand and YOLO mode.
 
 For profile generation, AWS credential injection, the standalone CLI, implementation details, and design rationale, see
-the [agent-boundary package README](https://github.com/Metta-AI/agent-boundary#readme).
+the [agent-boundary package README](https://github.com/softmax-universe/agent-boundary#readme).
 
 ## Security note
 
 This raises the floor against accidental misuse; it is not containment. Your profile is the boundary: read it, and keep
 its tradeoffs documented in comments beside each grant. The
-[starter profile](https://github.com/Metta-AI/agent-boundary/blob/main/examples/default.yaml) is the commented
+[starter profile](https://github.com/softmax-universe/agent-boundary/blob/main/examples/default.yaml) is the commented
 reference.
 
 ## Installing
@@ -21,12 +21,12 @@ reference.
 Requirements: [uv](https://docs.astral.sh/uv/), [nono](https://nono.sh/), and `jq` (statusline only).
 
 ```text
-/plugin marketplace add Metta-AI/agent-boundary
+/plugin marketplace add softmax-universe/agent-boundary
 /plugin install agent-boundary@agent-boundary
 ```
 
 Enable it at the user scope and it applies to every project you open. Then give it a profile: copy the
-[starter profile](https://github.com/Metta-AI/agent-boundary/blob/main/examples/default.yaml) to
+[starter profile](https://github.com/softmax-universe/agent-boundary/blob/main/examples/default.yaml) to
 `${XDG_CONFIG_HOME:-~/.config}/agent-boundary/profiles/default.yaml` and adjust it, or point
 `AGENT_BOUNDARY_PROFILES_DIR` at a directory of profiles. Start a new session.
 
